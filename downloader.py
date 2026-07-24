@@ -56,21 +56,41 @@ h_guest['Cookie'] = 'JSESSIONID=ajax:0380846659549484462; lang=v=2&lang=en-us; b
 
 
 
-def get_video_url(u):
-	global ef_fn, ef_url
-	r = requests.get(u, headers=h)
-	src = html.unescape(r.text)
-	if not ef_fn and not ef_url:
-		ef = re.findall(r'"name":"(Ex_Files_.*?)".*?atedExerciseFile"\],"url":"(.*?)"', src, re.IGNORECASE | re.DOTALL | re.MULTILINE)
-		# print(ef)
-		if ef:
-			ef_fn =  ef[0][0]
-			ef_url =  ef[0][1]
-	
-	vmatch = re.findall(r'\{"streamingLocations":\[\{"url":"([\w:/.-]+'+res+'/[\w/=?&-]+)"', src, re.IGNORECASE | re.DOTALL | re.MULTILINE)
+def get_video_metadata(course_slug, video_slug, headers):
 
-	if vmatch:
-		return(vmatch[0])
+    video_info_url = ''.join([
+        "https://www.linkedin.com/learning-api/graphql",
+        "?variables=(",
+            "courseSlug:", course_slug, ",",
+            "videoSlug:", video_slug,
+        ")",
+        "&queryId=videos.eb0cecfaa25dcd83d23769c32e492c1e"
+    ])
+
+    r = requests.get(video_info_url, headers=headers)
+
+    return r.json()
+
+
+
+def get_video_url(metadata, resolution):
+
+    for element in metadata['data']['videosBySlugs']['elements']:
+        if element.get('entityType') != "VIDEO":
+            continue
+        streams = element['presentationDerived']['videoPlay']['videoPlayMetadata']['progressiveStreams']
+
+        # Determine resolution closest to preference
+        best_res = [{'height': 0}, 999999]
+        for stream in streams:
+            diff = abs(resolution - stream['height'])
+            if diff < best_res[1]:
+                best_res = [stream, diff]
+                if diff == 0:
+                    break
+
+        return best_res[0]['streamingLocations'][0]['url']
+
 
 def download(u, p):
 	r = requests.get(u, stream=True, headers=h)
@@ -96,35 +116,36 @@ for section in soup.select('.toc-section'):
 	
 	course.append(obj)
 
-sn = 0
-if not os.path.exists(f'{base_path}/{ctitle}'):
-	os.mkdir(f'{base_path}/{ctitle}')
-	
-for section in course:
-	print(section['section'])
-	name = f'{sn:02d} + ' + re.sub(r"^\d.\s*", "", section['section'].strip())
 
-	section_path = f'{base_path}/{ctitle}/{clean_dir(name).replace("-", " ").replace("+", "-").title()}'
-	if not os.path.exists(section_path):
-		os.mkdir(section_path)
-	for n, item in enumerate(section['items'], 0):
-		link = section['links'][n]
-		
-		vname = f'{sn:02d}.{n:02d} - {link.split("/")[-1].replace("-", " ").title()}.mp4'
-		vpath = f'{section_path}/{vname}'
+if not os.path.exists(f'{base_path}/{ctitle}/video'):
+    os.makedirs(f'{base_path}/{ctitle}/video')
 
-		print("Downloading:", vname)
-		if os.path.exists(vpath) and skip:
-			print("Video already exists, skipping...")
-			continue
-			
-		vurl = get_video_url(link)
-		if vurl:
-			download(vurl, vpath)
-		
-	sn += 1
+headers = {
+    'X-RestLi-Protocol-Version': '2.0.0',
+    'Csrf-Token': jsession,
+    'Cookie': f'JSESSIONID={jsession}; li_at="{li_at}"'
+}
+for sn, section in enumerate(course):
+    print(section['section'])
+    name = f'{sn+1:02d} + ' + re.sub(r"^\d.\s*", "", section['section'].strip())
 
-if ef_fn and ef_url:
-	ef_path = f'{base_path}/{ctitle}/{ef_fn}'
-	download(ef_url, ef_path)
+    section_path = f'{base_path}/{ctitle}/video/{clean_dir(name).replace("-", " ").replace("+", "-").title()}'
+    if not os.path.exists(section_path):
+        os.mkdir(section_path)
 
+    for n, item in enumerate(section['items'], 0):
+
+        video_slug = section['links'][n].split("/")[-1]
+
+        vname = f'{sn+1:02d}.{n+1:02d} - {video_slug.replace("-", " ").title()}.mp4'
+        vpath = f'{section_path}/{vname}'
+
+        print("Downloading:", vname)
+        if os.path.exists(vpath) and skip:
+            print("Video already exists, skipping...")
+            continue
+
+        metadata = get_video_metadata(slug, video_slug, headers)
+        vurl = get_video_url(metadata, int(res))
+        if vurl:
+            download(vurl, vpath)
